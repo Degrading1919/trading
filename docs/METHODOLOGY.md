@@ -254,3 +254,199 @@ bias from trying many backtests:
 
 These limitations are reasons to build replay and execution layers carefully, not
 reasons to hide complexity inside the initial ranker.
+
+## 9. Adaptive probabilistic layer
+
+### 9.1 Separation from the fixed baseline
+
+The fixed methodology above remains version `1.0.0` and is not reimplemented by
+the adaptive code. At every decision timestamp, `AdaptiveRankingEngine` first
+runs the existing `ScreeningEngine`. Its eligible universe and six normalized
+features are the complete current prediction input. The fixed score remains in
+the output as `baseline_score` and `baseline_rank`.
+
+The adaptive layer has its own methodology version, also initially `1.0.0`, and
+answers a different question: conditional on the fixed baseline information set,
+what is the estimated probability that a stock will outperform the median stock
+in that same investable formation cohort over the next 42 completed market
+sessions? The probability is a research estimate, not a promise of profit and not
+a portfolio weight.
+
+This boundary creates three distinct layers:
+
+1. the immutable, literature-motivated fixed baseline;
+2. a purely numerical adaptive probability model trained on frozen baseline
+   artifacts and realized outcomes;
+3. future AI-assisted research or judgment that may consume the two artifacts but
+   cannot alter features, labels, coefficients, probabilities, or rank arithmetic.
+
+Gu, Kelly, and Xiu show that statistical learning can help forecast the
+cross-section of equity returns and that momentum, liquidity, and volatility
+remain important predictors. They also preserve temporal ordering in validation:
+[Empirical Asset Pricing via Machine Learning (2020)](https://doi.org/10.1093/rfs/hhaa009).
+Haddad, Kozak, and Santosh provide evidence that factor expected returns can vary
+over time, while also emphasizing the need to discipline a large factor-timing
+search:
+[Factor Timing (2020)](https://doi.org/10.3386/w26708).
+These findings motivate testing time-varying weights; they do not establish that
+this particular implementation will outperform the fixed baseline.
+
+### 9.2 Frozen training cohort and event label
+
+A training cohort begins with a completed fixed-baseline run at `formation_at`.
+For every candidate, the cohort stores the six `normalized_*` values, baseline
+methodology/configuration hashes, run fingerprint, reference session, and declared
+formation-universe size. Those feature values are immutable.
+
+After exactly 42 shared market sessions, a return pipeline supplies one finite
+total return for every formation candidate:
+
+```text
+FORWARD_RETURN(i,t) = TRI(i,t+42) / TRI(i,t) - 1
+```
+
+The outcome pipeline must incorporate distributions, corporate actions, and any
+delisting return. A cohort with even one missing outcome is rejected rather than
+silently converted into a survivor-only sample. `horizon_sessions=42` is an ex
+ante approximation to two trading months and is inside the requested one-to-two
+month research horizon; it was not selected from this project's results.
+
+Within each complete formation cohort, the binary event is:
+
+```text
+Y(i,t) = 1 if FORWARD_RETURN(i,t) > median_j(FORWARD_RETURN(j,t)); else 0
+```
+
+The strict comparison gives ties a zero label. A cross-sectional median target is
+robust to extreme realized returns, remains meaningful across market regimes, and
+aligns the probability with the ranking task. It is not the probability of a
+positive absolute return or of beating a named market index.
+
+### 9.3 Point-in-time and revision rules
+
+Every materialized training row has `formation_at`, `label_end_at`, and
+`available_at`. A row can train a model at decision timestamp `D` only when:
+
+```text
+formation_at < label_end_at <= available_at <= D
+formation_at >= D - training_window_calendar_days
+```
+
+The adaptive schema filters these rules independently of the provider. It selects
+the latest row version known at `D`. A revision may correct only
+`forward_return`; it cannot rewrite the frozen baseline feature values, cohort
+metadata, or baseline fingerprints. A revision that became available after `D`
+cannot affect a replay at `D`.
+
+All cohorts must match the current fixed baseline's methodology version and full
+configuration hash. This prevents mixing features built under different filters,
+factor definitions, or normalization rules. The training input hash is calculated
+after point-in-time version selection and rolling-window filtering, so appending a
+future row leaves the earlier fit and run fingerprint unchanged.
+
+Point-in-time correctness ultimately depends on the provider retaining historical
+universe membership, delisted securities, and original data versions. The schema
+can reject incomplete or internally inconsistent artifacts; it cannot recover
+facts a provider never preserved.
+
+### 9.4 Initial probability model
+
+The reference adaptive method is a pooled L2-regularized logistic regression:
+
+```text
+logit(P(Y(i,t)=1)) = intercept + sum_f(beta_f * X(i,t,f))
+```
+
+`X` contains only the six baseline normalized factors in their canonical order.
+A missing normalized factor enters as zero, exactly matching its neutral
+fixed-baseline contribution. No LLM, text embedding, generated market datum, or
+post-formation feature enters the fit.
+
+The fitted parameters minimize:
+
+```text
+weighted_mean_binary_log_loss + 0.5 * lambda * sum_f(beta_f^2)
+```
+
+The intercept is not penalized. Each formation cohort receives equal total
+likelihood weight so changes in universe size do not cause a large cohort to
+dominate the fit. L2 shrinkage reduces unstable coefficient magnitudes without
+performing factor selection. Le Cessie and van Houwelingen show how ridge
+estimators can improve logistic prediction when unrestricted estimates overfit:
+[Ridge Estimators in Logistic Regression (1992)](https://doi.org/10.2307/2347628).
+
+The default, preregistered engineering choices are:
+
+| Setting | Default |
+|---|---:|
+| Forward horizon | 42 market sessions |
+| Rolling formation window | 1,826 calendar days (about five years) |
+| Minimum complete cohorts | 24 |
+| Minimum observations | 500 |
+| Minimum observations in each class | 25 |
+| L2 penalty `lambda` | 0.10 |
+| Maximum Newton iterations | 100 |
+| Convergence tolerance | `1e-9` |
+
+The window balances adaptation against the very low signal-to-noise ratio of
+individual-stock returns. The numerical values are explicit priors, not the
+winners of a historical grid search. They require sensitivity analysis and truly
+out-of-sample evaluation before any use. A failed convergence or insufficient
+sample fails the adaptive run; the engine does not substitute a hidden fallback.
+
+### 9.5 Walk-forward operation and explainability
+
+For each decision timestamp, the engine independently:
+
+1. runs the fixed baseline at that timestamp;
+2. selects only complete training rows available at that timestamp and inside the
+   rolling window;
+3. fits a fresh model without carrying fitted state forward;
+4. predicts the current fixed-baseline candidate universe; and
+5. sorts descending probability with symbol as the deterministic tie-break.
+
+`run_walk_forward` requires strictly increasing decision timestamps and repeats
+that process. Consequently, an outcome becoming known between two timestamps may
+affect the later coefficients, but never the earlier model or rank.
+
+For each stock, the output exposes the intercept, every additive feature
+contribution in log-odds units, total log odds, probability, and both adaptive and
+fixed ranks. The identity is exact:
+
+```text
+adaptive_log_odds = adaptive_base_log_odds
+                    + sum_f(adaptive_contribution_f)
+probability_outperformance = logistic(adaptive_log_odds)
+```
+
+The learned-weight artifact reports each coefficient, its odds ratios, its share
+of total absolute coefficient magnitude, and the corresponding fixed baseline
+weight. A coefficient may be negative: that is an auditable statement about the
+recent training window, not a rewrite of the academic baseline.
+
+`confidence_from_50pct = 2 * abs(probability - 0.5)` is provided as a compact
+distance from an even-probability prediction. It is not a confidence interval,
+standard error, or guarantee of calibration.
+
+### 9.6 Validation and non-optimization policy
+
+The manifest reports weighted in-sample Brier score and log loss only as fit
+diagnostics, explicitly not as performance estimates. Brier introduced the
+quadratic score for probability forecasts:
+[Verification of Forecasts Expressed in Terms of Probability (1950)](https://doi.org/10.1175/1520-0493%281950%29078%3C0001%3AVOFEIT%3E2.0.CO%3B2).
+Probability calibration must be assessed on predictions that were genuinely
+out of sample.
+
+A research comparison should preregister decision dates and evaluate the fixed
+and adaptive ranks over the same complete point-in-time universe. At minimum it
+should report walk-forward Brier score, log loss, calibration by probability bin,
+rank information coefficient, top-quantile return, turnover, capacity, costs,
+drawdowns, and delisting-inclusive results. Overlapping 42-session outcomes are
+serially and cross-sectionally dependent, so naive row-level standard errors are
+not valid.
+
+Alternative windows, penalties, labels, or model families are separate methods.
+They must use the `ProbabilisticModel`/`BinaryOutcomeLabeler` boundaries, retain a
+trial log, and be compared on untouched walk-forward periods. Repeatedly choosing
+the historically best alternative would recreate the multiple-testing problem
+the fixed baseline was designed to avoid.

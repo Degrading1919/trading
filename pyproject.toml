@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 swingrank = "swingrank.cli:main"
+swingrank-adaptive = "swingrank.adaptive.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
