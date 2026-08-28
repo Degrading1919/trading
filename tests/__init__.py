@@ -1,0 +1,1 @@
+"""swingrank test suite."""
