@@ -1,4 +1,12 @@
-# swingrank
+# Stock-Trader
+
+## Day trading research
+
+Use `dayrank` to capture historical Alpaca data, build a premarket watchlist,
+and compare opening breakouts with quote-based fills and settled cash.
+[Run the day trading workflow](docs/DAY_TRADING.md).
+
+## Swing research
 
 `swingrank` is an initial, research-oriented U.S. equity screening and ranking
 engine for roughly one-to-two-month candidate holding periods. It calculates

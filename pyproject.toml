@@ -12,6 +12,7 @@ authors = [{ name = "Stock-Trader project" }]
 dependencies = [
   "numpy>=1.26,<3",
   "pandas>=2.1,<4",
+  "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +23,7 @@ dev = [
 ]
 
 [project.scripts]
+dayrank = "dayrank.cli:main"
 swingrank = "swingrank.cli:main"
 swingrank-adaptive = "swingrank.adaptive.cli:main"
 
