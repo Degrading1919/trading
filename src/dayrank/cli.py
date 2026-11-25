@@ -17,7 +17,8 @@ from itertools import chain
 from pathlib import Path
 
 from dayrank import METHODOLOGY_VERSION
-from dayrank.alpaca import Alpaca, DataRequestError, capture
+from dayrank.alpaca import Alpaca, DataRequestError, _splits, capture
+from dayrank.anomalies import AnomalyConfig, detect, rank_alerts, read_sample
 from dayrank.data import Session, read_session, write_json
 from dayrank.discovery import discover, premarket_window
 from dayrank.indicators import IndicatorRules, collect_tape, evaluate_tape, summarize
@@ -96,6 +97,32 @@ def parser() -> argparse.ArgumentParser:
         "--credential-target", help="Name of a Windows generic credential"
     )
     snapshots.add_argument("--out", type=Path, required=True)
+
+    anomalies = commands.add_parser(
+        "anomalies", help="Rank unexpected moves against prior sessions and peers"
+    )
+    anomalies.add_argument(
+        "--target", type=Path, required=True, help="Snapshot directory to score"
+    )
+    anomalies.add_argument(
+        "--history",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="Earlier snapshot directories",
+    )
+    anomalies.add_argument("--lookback", type=int, default=30)
+    anomalies.add_argument("--minimum-history", type=int, default=20)
+    anomalies.add_argument("--alert-budget", type=int, default=15)
+    anomalies.add_argument(
+        "--verify-splits",
+        action="store_true",
+        help="Check candidate symbols with Alpaca",
+    )
+    anomalies.add_argument(
+        "--credential-target", help="Name of a Windows generic credential"
+    )
+    anomalies.add_argument("--out", type=Path, required=True)
 
     collect = commands.add_parser("capture", help="Save an Alpaca session snapshot")
     collect.add_argument("--date", type=date.fromisoformat, required=True)
@@ -272,6 +299,52 @@ def _snapshots(args) -> None:
     )
 
 
+def _anomalies(args) -> None:
+    config = AnomalyConfig(
+        lookback=args.lookback,
+        minimum_history=args.minimum_history,
+        alert_budget=args.alert_budget,
+    )
+    target = read_sample(args.target)
+    sources = sorted(
+        (json.loads((path / "manifest.json").read_bytes())["date"], path)
+        for path in args.history
+    )
+    days = [day for day, _ in sources]
+    if len(set(days)) != len(days) or any(
+        day >= target.manifest["date"] for day in days
+    ):
+        raise ValueError(
+            "Baseline sessions must be distinct and precede the target session"
+        )
+    result = detect(
+        target, [read_sample(path) for _, path in sources[-config.lookback :]], config
+    )
+    symbols = sorted(
+        {row["entity"] for row in result["candidates"] if row["scope"] == "stock"}
+    )
+    splits, status = (
+        _splits(_client(args), symbols, date.fromisoformat(target.manifest["date"]))
+        if args.verify_splits and symbols
+        else (set(), "not_needed" if args.verify_splits else "not_requested")
+    )
+    rank_alerts(result, config.alert_budget, splits, status)
+    fields = ("date", "decision_at", "scope", "entity", "kind", "alert_status", "rank")
+    _csv(args.out / "alerts.csv", result["alerts"], fields)
+    _csv(args.out / "candidates.csv", result["candidates"], fields)
+    _csv(
+        args.out / "audit.csv.gz",
+        result["audit"],
+        ("date", "symbol", "decision_at", "data_quality"),
+    )
+    manifest = result["manifest"]
+    write_json(args.out / "manifest.json", manifest)
+    print(
+        f"{manifest['date']} {manifest['feed'].upper()} saved {manifest['alert_count']} alerts "
+        f"from {manifest['snapshot_rows']:,} snapshots. {args.out}"
+    )
+
+
 def _indicators(args) -> None:
     rules = IndicatorRules()
     if args.review_size < 1:
@@ -436,6 +509,7 @@ def main(argv: list[str] | None = None) -> int:
             "record": _record,
             "indicators": _indicators,
             "snapshots": _snapshots,
+            "anomalies": _anomalies,
             "capture": _capture,
             "scan": _scan,
             "replay": _replay,

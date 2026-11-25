@@ -107,6 +107,47 @@ sample design. Choose one output directory per dated feed run. The command
 uses historical market data and the same SIP entitlement buffer as discovery.
 Snapshot rows contain observations through the decision time.
 
+## Detect unusual behavior
+
+`dayrank anomalies` reads a target snapshot folder and earlier folders for
+the same feed and sampling design. It scores each observation against up
+to 30 prior sessions at the same Eastern clock time. Each metric needs
+20 comparable prior observations by default. No LLM or Alpaca connection
+is required for offline scoring.
+
+```powershell
+$history = Get-ChildItem runs/baseline -Directory | Select-Object -ExpandProperty FullName
+dayrank anomalies --target runs/2026-11-23-market --history @history --out runs/2026-11-23-anomalies
+```
+
+- Price dislocations use the recent five-minute return. A current move
+  that aligns with a sufficiently populated peer group is retained in the
+  evidence and excluded from the stock alert list.
+- Participation surges require unusually high dollar volume **and** trade
+  count against the stock's own history. They can surface before a large
+  price move. Market and price/liquidity peer-group alerts test changes in
+  the median recent return against that group's earlier sessions.
+- Raw prior-close gaps are provisional offline. Add `--verify-splits` and
+  Alpaca credentials to check candidate symbols and exclude reported
+  effective splits. Corporate actions may reach the feed with a delay.
+  As-reported splits help diagnose historical anomalies. The feed does not
+  prove that a split check would have returned the same result at alert time.
+  [Alpaca corporate actions](https://docs.alpaca.markets/us/reference/corporateactions-1)
+
+Scores use a median and median absolute deviation with a minimum scale
+for thinly traded stocks. Each candidate also needs a small empirical
+tail fraction in the historical sample. This fraction is a count of
+similarly extreme past observations with a finite-sample adjustment. It
+does not estimate trade profitability. Stale observations, isolated
+prints, missing baselines, and quote coverage remain visible.
+
+The command writes `alerts.csv`, `candidates.csv` with suppression reasons,
+`audit.csv.gz` with every target stock snapshot, and `manifest.json` with the
+baseline dates, settings, and coverage. It ranks up to 15 alerts per clock by
+default and keeps the first alert per symbol, anomaly type, and direction
+across the supplied target clocks. One symbol can use at most one alert slot
+at the same clock. Peer groups use prior-day price and dollar-volume bands.
+
 ## Build an indicator review set
 
 `indicators` reads one or more saved discovery folders. It accounts for the
