@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from dayrank.data import ET, timestamp
+from dayrank.data import ET, at, timestamp
 
 DIRECTORY = "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqtraded.txt"
 ARCHIVE = "https://raw.githubusercontent.com/supermodo/us-markets-timemachine"
@@ -131,3 +131,21 @@ def download_directory(archive_date: date | None = None, ref: str = "main") -> d
     if len(document["rows"]) < 1_000:
         raise ValueError("Exchange directory appears truncated")
     return document
+
+
+def directory_rows(
+    document: dict, previous_day: str, window_start: pd.Timestamp
+) -> list[dict]:
+    if document.get("schema") != 1:
+        raise ValueError("Unsupported exchange directory schema")
+    available = timestamp(document["available_at"])
+    published = timestamp(document["published_at"])
+    if not at(previous_day, "00:00") <= published <= available <= window_start:
+        raise ValueError(
+            "Use a fresh directory available before the feed's premarket open"
+        )
+    rows = document["rows"]
+    eligible = [row["symbol"] for row in rows if not row["listing_reasons"]]
+    if not eligible or len(eligible) != len(set(eligible)):
+        raise ValueError("Directory eligibility is empty or contains duplicate symbols")
+    return rows

@@ -13,6 +13,7 @@ import sys
 import tempfile
 from dataclasses import asdict
 from datetime import date, time
+from itertools import chain
 from pathlib import Path
 
 from dayrank import METHODOLOGY_VERSION
@@ -23,6 +24,7 @@ from dayrank.indicators import IndicatorRules, collect_tape, evaluate_tape, summ
 from dayrank.recorder import read_recording, record
 from dayrank.replay import SETUPS, ReplayConfig, replay
 from dayrank.scan import SELECTIONS, ScanConfig, scan
+from dayrank.snapshots import CLOCKS, collect_snapshots
 from dayrank.universe import download_directory
 
 
@@ -74,6 +76,26 @@ def parser() -> argparse.ArgumentParser:
         "--credential-target", help="Name of a Windows generic credential"
     )
     indicators.add_argument("--out", type=Path, required=True)
+
+    snapshots = commands.add_parser(
+        "snapshots",
+        help="Sample all eligible stocks at fixed times without indicator gates",
+    )
+    snapshots.add_argument("--date", type=date.fromisoformat, required=True)
+    snapshots.add_argument("--universe", type=Path, required=True)
+    snapshots.add_argument("--feed", choices=("sip", "iex"), default="sip")
+    snapshots.add_argument(
+        "--at",
+        action="append",
+        type=time.fromisoformat,
+        help="Snapshot time in ET, repeatable",
+    )
+    snapshots.add_argument("--bar-lag-seconds", type=int, default=35)
+    snapshots.add_argument("--quote-sample-size", type=int, default=100)
+    snapshots.add_argument(
+        "--credential-target", help="Name of a Windows generic credential"
+    )
+    snapshots.add_argument("--out", type=Path, required=True)
 
     collect = commands.add_parser("capture", help="Save an Alpaca session snapshot")
     collect.add_argument("--date", type=date.fromisoformat, required=True)
@@ -133,9 +155,14 @@ def _symbols(raw: str) -> list[str]:
 def _csv(path: Path, rows: list[dict], minimum_fields: tuple[str, ...]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = list(
-        dict.fromkeys((*minimum_fields, *(key for row in rows for key in row)))
+        dict.fromkeys(chain(minimum_fields, (key for row in rows for key in row)))
     )
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    destination = (
+        gzip.open(path, "wt", encoding="utf-8", newline="")
+        if path.suffix == ".gz"
+        else path.open("w", encoding="utf-8", newline="")
+    )
+    with destination as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
 
@@ -216,6 +243,33 @@ def _record(args) -> None:
     )
     count = asyncio.run(record(client, directory, window, args.feed, args.out))
     print(f"Recorded {count:,} bar events. {args.out}")
+
+
+def _snapshots(args) -> None:
+    raw = args.universe.read_bytes()
+    result = collect_snapshots(
+        _client(args),
+        json.loads(raw),
+        args.date,
+        feed=args.feed,
+        clocks=args.at
+        if args.at is not None
+        else [time.fromisoformat(clock) for clock in CLOCKS],
+        bar_lag_seconds=args.bar_lag_seconds,
+        quote_sample_size=args.quote_sample_size,
+    )
+    _csv(args.out / "listings.csv", result["listings"], ("symbol", "listing_reasons"))
+    _csv(
+        args.out / "snapshots.csv.gz",
+        result["rows"],
+        ("date", "feed", "symbol", "decision_at"),
+    )
+    manifest = result["manifest"]
+    manifest["universe_json_sha256"] = hashlib.sha256(raw).hexdigest()
+    write_json(args.out / "manifest.json", manifest)
+    print(
+        f"Saved {manifest['snapshot_rows']:,} {args.feed.upper()} snapshots for {args.date}. {args.out}"
+    )
 
 
 def _indicators(args) -> None:
@@ -381,6 +435,7 @@ def main(argv: list[str] | None = None) -> int:
             "discover": _discover,
             "record": _record,
             "indicators": _indicators,
+            "snapshots": _snapshots,
             "capture": _capture,
             "scan": _scan,
             "replay": _replay,

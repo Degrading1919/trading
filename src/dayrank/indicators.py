@@ -10,7 +10,7 @@ from statistics import median
 import pandas as pd
 
 from dayrank.alpaca import PAPER, Alpaca
-from dayrank.data import MINUTE, SECOND, Bar, at, number, timestamp
+from dayrank.data import MINUTE, SECOND, Candle, at, timestamp
 
 HORIZONS = (1, 3, 5)
 FEATURE_WINDOWS = (5, 15, 30)
@@ -26,25 +26,6 @@ class IndicatorRules:
     break_buffer_bps: float = 15
     minimum_bar_volume_multiple: float = 2
     minimum_signal_trades: int = 20
-
-
-@dataclass(frozen=True, slots=True)
-class Candle:
-    bar: Bar
-    open: float
-    trades: float | None
-    vwap: float | None
-    notional: float
-
-    @classmethod
-    def read(cls, row: dict) -> Candle:
-        bar = Bar.read(row)
-        opening = number(row["o"], "open")
-        if not bar.low <= opening <= bar.high:
-            raise ValueError(f"Invalid opening price at {bar.start}")
-        trades = number(row["n"], "trade count") if row.get("n") is not None else None
-        vwap = number(row["vw"], "VWAP") if row.get("vw") is not None else None
-        return cls(bar, opening, trades, vwap or None, (vwap or bar.close) * bar.volume)
 
 
 def collect_tape(

@@ -13,6 +13,7 @@ from dayrank.alpaca import PAPER, Alpaca, _news, _splits
 from dayrank.data import ET, MINUTE, SECOND, Bar, at, timestamp
 from dayrank.scan import SELECTIONS, ScanConfig
 from dayrank.scan import _news as classify_news
+from dayrank.universe import directory_rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,27 +89,6 @@ def premarket_window(
     if start >= cutoff:
         raise ValueError("The scan cutoff precedes the feed's premarket session")
     return Window(day, start, cutoff, tuple(prior), clock)
-
-
-def _directory_rows(document: dict, window: Window) -> list[dict]:
-    if document.get("schema") != 1:
-        raise ValueError("Unsupported exchange directory schema")
-    available = timestamp(document["available_at"])
-    published = timestamp(document["published_at"])
-    if (
-        not at(window.previous_days[-1], "00:00")
-        <= published
-        <= available
-        <= window.start
-    ):
-        raise ValueError(
-            "Use a fresh directory available before the feed's premarket open"
-        )
-    rows = document["rows"]
-    eligible = [row["symbol"] for row in rows if not row["listing_reasons"]]
-    if not eligible or len(eligible) != len(set(eligible)):
-        raise ValueError("Directory eligibility is empty or contains duplicate symbols")
-    return rows
 
 
 def _points(
@@ -258,7 +238,7 @@ def discover(
     window = premarket_window(
         client, day, feed, lookback, scan_before, start_at=start_at
     )
-    directory_rows = _directory_rows(directory, window)
+    listings = directory_rows(directory, window.previous_days[-1], window.start)
     if recorded is None:
         delay = 16 * MINUTE if feed == "sip" else pd.Timedelta(0)
         if pd.Timestamp.now(tz="UTC") < window.cutoff + delay:
@@ -275,9 +255,7 @@ def discover(
             raise ValueError(
                 "Receipt tape must cover the full window and match the directory"
             )
-    names = sorted(
-        row["symbol"] for row in directory_rows if not row["listing_reasons"]
-    )
+    names = sorted(row["symbol"] for row in listings if not row["listing_reasons"])
     prior = window.previous_days[-1]
     raw_close = client.stocks(
         "bars",
@@ -348,7 +326,7 @@ def discover(
 
     audit = []
     alerts = []
-    for row in directory_rows:
+    for row in listings:
         name = row["symbol"]
         reason = row["listing_reasons"]
         points = paths.get(name, [])
@@ -457,7 +435,7 @@ def discover(
             if recorded
             else "historical_completion_plus_lag",
             bar_lag_seconds=None if recorded else bar_lag_seconds,
-            listing_rows=len(directory_rows),
+            listing_rows=len(listings),
             eligible_listings=len(names),
             with_previous_close=len(close),
             price_possible=len(price_possible),

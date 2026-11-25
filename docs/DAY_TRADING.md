@@ -66,6 +66,47 @@ dayrank record --date YYYY-MM-DD --universe runs/universe.json --feed iex --out 
 dayrank discover --date YYYY-MM-DD --universe runs/universe.json --feed iex --recording runs/iex.jsonl --out runs/iex-recorded
 ```
 
+## Sample the market without indicator rules
+
+`snapshots` starts from a frozen exchange directory. Every structurally
+eligible common stock gets a row at every requested time, including stocks
+with no prior close, no minute bars, or a stale last print. The command
+applies no gap, price, volume, or breakout condition to sample membership.
+`listings.csv` accounts for every directory row and its eligibility reason.
+
+```powershell
+dayrank snapshots --date 2026-11-23 --universe runs/2026-11-23-universe.json --out runs/2026-11-23-market
+dayrank snapshots --date 2026-11-23 --universe runs/2026-11-23-universe.json --feed iex --at 08:45 --at 09:25 --out runs/2026-11-23-iex-market
+```
+
+Defaults are 8:15, 8:45, 9:15, 9:25, 9:35, and 9:45 a.m. ET. Each row in
+`snapshots.csv.gz` uses values observable by its decision time under the
+historical bar lag. The 5-, 15-, and 30-minute feature windows measure activity,
+recent price ranges, and distances to the high and estimated VWAP. Zero bar
+counts indicate no observations in the window. Prices and price changes stay
+blank when the necessary data is missing. Split effects may appear in changes
+from the unadjusted prior close.
+
+Relative strength compares the move from the same-feed prior close with
+the median of other fresh stocks in the same prior-day price and dollar-volume
+bands. The prior-day bands and peer coverage appear in the manifest. This
+comparison uses up to two-minute-old bar observations and requires five peers.
+
+The default quote sample is 100 tickers per session. It is chosen from the
+entire eligible roster using a hash of the date and symbol, before examining
+any price move. Use `--quote-sample-size 0` for a bar-only run or increase the
+sample to extend coverage. Other symbols still get feature rows. Quotes are
+the last event in the minute up to the decision time. Quote event time serves
+as an availability estimate, and the output distinguishes unsampled symbols,
+missing quotes, and invalid books.
+[Alpaca historical bars](https://docs.alpaca.markets/us/reference/stockbars),
+[Alpaca historical quotes](https://docs.alpaca.markets/us/reference/stockquotes-1)
+
+`manifest.json` records data coverage, source roster, clocks, lag, and quote
+sample design. Choose one output directory per dated feed run. The command
+uses historical market data and the same SIP entitlement buffer as discovery.
+Snapshot rows contain observations through the decision time.
+
 ## Build an indicator review set
 
 `indicators` reads one or more saved discovery folders. It accounts for the

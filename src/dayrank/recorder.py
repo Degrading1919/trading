@@ -13,7 +13,8 @@ from websockets.exceptions import WebSocketException
 
 from dayrank.alpaca import Alpaca
 from dayrank.data import Bar, timestamp
-from dayrank.discovery import Window, _directory_rows
+from dayrank.discovery import Window
+from dayrank.universe import directory_rows
 
 
 @asynccontextmanager
@@ -76,7 +77,7 @@ async def record(
 ) -> int:
     wanted = {
         row["symbol"]
-        for row in _directory_rows(directory, window)
+        for row in directory_rows(directory, window.previous_days[-1], window.start)
         if not row["listing_reasons"]
     }
     if out.exists():
