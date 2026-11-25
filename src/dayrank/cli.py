@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import gzip
 import hashlib
 import json
 import re
 import sys
+import tempfile
 from dataclasses import asdict
 from datetime import date, time
 from pathlib import Path
@@ -17,6 +19,7 @@ from dayrank import METHODOLOGY_VERSION
 from dayrank.alpaca import Alpaca, DataRequestError, capture
 from dayrank.data import Session, read_session, write_json
 from dayrank.discovery import discover, premarket_window
+from dayrank.indicators import IndicatorRules, collect_tape, evaluate_tape, summarize
 from dayrank.recorder import read_recording, record
 from dayrank.replay import SETUPS, ReplayConfig, replay
 from dayrank.scan import SELECTIONS, ScanConfig, scan
@@ -54,6 +57,23 @@ def parser() -> argparse.ArgumentParser:
     find.add_argument("--history-sessions", type=int, default=20)
     find.add_argument("--bar-lag-seconds", type=int, default=35)
     find.add_argument("--recording", type=Path, help="Replay actual bar receipt times")
+
+    indicators = commands.add_parser(
+        "indicators", help="Audit breakout indicators and build a historical review set"
+    )
+    indicators.add_argument(
+        "inputs", type=Path, nargs="+", help="Discovery folders or saved tapes"
+    )
+    indicators.add_argument(
+        "--premarket-only",
+        action="store_true",
+        help="Collect only through discovery cutoff",
+    )
+    indicators.add_argument("--review-size", type=int, default=72)
+    indicators.add_argument(
+        "--credential-target", help="Name of a Windows generic credential"
+    )
+    indicators.add_argument("--out", type=Path, required=True)
 
     collect = commands.add_parser("capture", help="Save an Alpaca session snapshot")
     collect.add_argument("--date", type=date.fromisoformat, required=True)
@@ -198,6 +218,60 @@ def _record(args) -> None:
     print(f"Recorded {count:,} bar events. {args.out}")
 
 
+def _indicators(args) -> None:
+    rules = IndicatorRules()
+    if args.review_size < 1:
+        raise ValueError("Review size must be positive")
+    args.out.mkdir(parents=True, exist_ok=True)
+    results = []
+    client = None
+    for source in args.inputs:
+        if source.is_dir():
+            manifest = json.loads((source / "manifest.json").read_bytes())
+            with (source / "symbols.csv").open(encoding="utf-8", newline="") as handle:
+                names = list(csv.DictReader(handle))
+            if client is None:
+                client = _client(args)
+            tape = collect_tape(client, manifest, names, args.premarket_only, rules)
+            folder = args.out / "tapes"
+            folder.mkdir(exist_ok=True)
+            target = folder / f"{tape['date']}-{tape['feed']}.json.gz"
+            with tempfile.NamedTemporaryFile(dir=folder, delete=False) as handle:
+                temporary = Path(handle.name)
+            try:
+                with gzip.open(temporary, "wt", encoding="utf-8") as handle:
+                    json.dump(tape, handle, allow_nan=False, separators=(",", ":"))
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        else:
+            with gzip.open(source, "rt", encoding="utf-8") as handle:
+                tape = json.load(handle)
+        result = evaluate_tape(tape, rules)
+        results.append(result)
+        print(
+            f"{tape['date']} {tape['feed'].upper()} produced {len(result[0]):,} cases.",
+            flush=True,
+        )
+    report = summarize(results, rules, args.review_size)
+    _csv(
+        args.out / "cases.csv",
+        report["cases"],
+        ("case_id", "date", "symbol", "pattern", "case", "observation"),
+    )
+    _csv(
+        args.out / "review.csv",
+        report["review"],
+        ("case_id", "review_label", "review_note"),
+    )
+    _csv(args.out / "forward.csv", report["outcomes"], ("case_id",))
+    summary = report["summary"]
+    write_json(args.out / "summary.json", summary)
+    print(
+        f"Saved {summary['case_count']:,} cases and {summary['review_count']} review rows. {args.out}"
+    )
+
+
 def _capture(args) -> None:
     symbols = (
         args.symbols
@@ -306,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
             "universe": _universe,
             "discover": _discover,
             "record": _record,
+            "indicators": _indicators,
             "capture": _capture,
             "scan": _scan,
             "replay": _replay,

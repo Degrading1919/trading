@@ -66,6 +66,46 @@ dayrank record --date YYYY-MM-DD --universe runs/universe.json --feed iex --out 
 dayrank discover --date YYYY-MM-DD --universe runs/universe.json --feed iex --recording runs/iex.jsonl --out runs/iex-recorded
 ```
 
+## Build an indicator review set
+
+`indicators` reads one or more saved discovery folders. It accounts for the
+full directory and fetches minute bars only for in-scope names that had a
+previous close and a premarket print. Known split exclusions carry over from
+discovery. The indicator census covers a 15-minute premarket rolling high,
+the premarket high frozen at the discovery cutoff, and the five-minute
+opening-range high. It records the first close through each level, the next
+consecutive close holding that level when available, wick rejections, and
+near misses. The current volume confirmation thresholds are research
+hypotheses. All measurements use the ticker's elapsed time and only the bars
+available at the event. Market open resets the rolling feature history.
+
+```powershell
+dayrank indicators runs/2026-11-23-sip runs/2026-11-24-sip --review-size 72 --out runs/indicator-study
+dayrank indicators runs/indicator-study/tapes/2026-11-23-sip.json.gz --out runs/indicator-repeat
+```
+
+- `cases.csv` contains the full census with per-bar observations and
+  trailing 5-, 15-, and 30-minute feature windows.
+- `review.csv` contains a repeatable sample across dates, patterns, and case
+  types with blank review labels. Add labels after inspecting each case.
+- `forward.csv` measures observed close changes after 1, 3, and 5 minutes.
+  Missing future candles remain blank. Keep this file out of inputs to feature
+  development and blind review. The changes are price observations.
+- `summary.json` reports coverage, rule definitions, outcome counts, and
+  median three-minute follow-through. It is small enough for a scheduled
+  process to pass to a model after the local computations finish.
+- `tapes/` retains the exact minute-bar response and timestamps used in the
+  study. Reprocessing these compressed files works without Alpaca credentials.
+
+For a scheduled pre-open audit, freeze the current directory before the
+feed's start, run `discover` with a dated output directory, and pass that
+directory to `indicators --premarket-only` after the discovery cutoff.
+The Python command runs without a model. Historical SIP requires the
+existing 16-minute entitlement buffer, so an Alpaca Basic run before the
+bell uses IEX. The indicator census currently models observation time using
+the discovery bar lag. It does not consume live receipt tapes, NBBO quotes,
+or venue-level executions.
+
 ## Run a historical session with a supplied roster
 
 ```powershell
