@@ -5,12 +5,68 @@ using the same session data for each comparison. It makes read-only requests to
 Alpaca and writes local artifacts. All defaults are starting assumptions for
 research.
 
-## Run a historical session
-
 Install from the repository root with `python -m pip install -e ".[dev]"`.
 Supply paper API credentials through `APCA_API_KEY_ID` and
 `APCA_API_SECRET_KEY` in your local environment, or pass
 `--credential-target` to read a named Windows generic credential.
+
+## Discover stocks from a dated directory
+
+Freeze a directory published before the feed's premarket window. Without
+`--archive-date`, the command downloads the current Nasdaq Trader directory and
+records when it was retrieved. For a historical run, choose an archived
+snapshot and keep the exported JSON. The archived file's Nasdaq creation
+timestamp serves as its historical availability estimate. The scanner
+requires a fresh directory from the previous trading date or later, available
+before the scan window. The directory hash and source URL go into the run
+manifest. [Nasdaq directory definitions](https://nasdaqtrader.com/Trader.aspx?id=SymbolDirDefs), [directory archive](https://github.com/supermodo/us-markets-timemachine)
+
+```powershell
+dayrank universe --archive-date 2026-11-22 --archive-ref a80aad7731337939fa5fda3c70f3f1480d0d9e3f --out runs/2026-11-23-universe.json
+dayrank discover --date 2026-11-23 --universe runs/2026-11-23-universe.json --feed sip --out runs/2026-11-23-sip
+dayrank discover --date 2026-11-23 --universe runs/2026-11-23-universe.json --feed sip --start-at 08:00 --out runs/2026-11-23-sip-08
+dayrank discover --date 2026-11-23 --universe runs/2026-11-23-universe.json --feed iex --out runs/2026-11-23-iex
+```
+
+- `symbols.csv` retains every directory row, including listing exclusions,
+  missing market data, and qualifying names. Eligibility starts with
+  supported exchange-listed common-stock descriptions. The first-alert
+  fields survive later fading or staleness at the cutoff.
+- `alerts.csv` reports each symbol's first qualifying bar event for each
+  selection rule. The scanner compares cumulative premarket volume to the
+  same minute over prior sessions from the same feed. It requires a
+  positive baseline and at least ten observations. Historical headlines
+  are evaluated at bar events using vendor timestamps.
+- `eligible-symbols.txt` feeds the cutoff roster into the existing
+  `capture --symbols-file` command for separate execution research.
+- `manifest.json` describes the window, directory, feed, gates, data
+  availability, alert counts, and cutoff counts. The window starts at
+  4:00 a.m. ET for SIP and 8:00 a.m. ET for IEX by default. Set
+  `--start-at 08:00` on SIP for a same-window comparison.
+
+Historical REST bars can include later revisions. Discovery models
+availability as the end of each minute plus 35 seconds by default. Use
+`--bar-lag-seconds` to test that assumption. The model also excludes prices
+whose last minute ended more than two minutes before the decision.
+Historical feed coverage and a first qualification count measure discovery.
+Executable entries and returns require a separate quote-based replay.
+
+To measure actual timing, freeze the current directory before premarket and
+start `record` before the chosen feed window. The recorder saves original
+minute bars and updates with local UTC receipt timestamps. Leave the recorder
+running through the cutoff with the system clock synchronized. Afterwards,
+attach the completed tape to `discover` with `--recording` and the same
+directory, date, feed, and window. The replay applies each update as it was
+received. Interrupted recordings leave a `.partial` file and the replay
+requires a completion record. [Alpaca stock stream](https://docs.alpaca.markets/us/docs/real-time-stock-pricing-data), [Alpaca feed access](https://docs.alpaca.markets/us/docs/about-market-data-api), [IEX hours](https://www.iex.io/resources/trading/trading-hours-holidays)
+
+```powershell
+dayrank universe --out runs/universe.json
+dayrank record --date YYYY-MM-DD --universe runs/universe.json --feed iex --out runs/iex.jsonl
+dayrank discover --date YYYY-MM-DD --universe runs/universe.json --feed iex --recording runs/iex.jsonl --out runs/iex-recorded
+```
+
+## Run a historical session with a supplied roster
 
 ```powershell
 dayrank capture --date 2026-11-23 --symbols SNDL,PLUG,OPEN,LCID --out runs/2026-11-23.json

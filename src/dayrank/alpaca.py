@@ -84,6 +84,9 @@ class Alpaca:
         finally:
             advapi.CredFree(pointer)
 
+    def websocket_headers(self) -> dict[str, str]:
+        return self._headers.copy()
+
     def get(self, host: str, path: str, **query):
         request = Request(f"{host}{path}?{urlencode(query)}", headers=self._headers)
         for attempt in range(3):
@@ -113,10 +116,19 @@ class Alpaca:
             seen.add(token)
             query["page_token"] = token
 
-    def stocks(self, endpoint: str, names: list[str], start, end, **query) -> dict:
+    def stocks(
+        self,
+        endpoint: str,
+        names: list[str],
+        start,
+        end,
+        *,
+        batch_size: int = 50,
+        **query,
+    ) -> dict:
         result: dict[str, list] = {name: [] for name in names}
-        for index in range(0, len(names), 50):
-            batch = names[index : index + 50]
+        for index in range(0, len(names), batch_size):
+            batch = names[index : index + batch_size]
             for page in self.pages(
                 f"/v2/stocks/{endpoint}",
                 symbols=",".join(batch),
